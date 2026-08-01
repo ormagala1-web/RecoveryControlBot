@@ -348,4 +348,42 @@ def obtener_respaldos_bot(
         ).fetchall()
 
 
+def obtener_respaldo(respaldo_id: int) -> Optional[sqlite3.Row]:
+    with conectar_db() as conexion:
+        return conexion.execute(
+            """
+            SELECT
+                h.*,
+                b.nombre AS bot_nombre,
+                b.username AS bot_username
+            FROM historial_respaldos AS h
+            JOIN bots_registrados AS b
+                ON b.id = h.bot_id
+            WHERE h.id = ?
+            LIMIT 1
+            """,
+            (int(respaldo_id),),
+        ).fetchone()
+
+
+def obtener_ultimos_respaldos(
+    limite: int = 30,
+) -> list[sqlite3.Row]:
+    with conectar_db() as conexion:
+        return conexion.execute(
+            """
+            SELECT
+                h.*,
+                b.nombre AS bot_nombre,
+                b.username AS bot_username
+            FROM historial_respaldos AS h
+            JOIN bots_registrados AS b
+                ON b.id = h.bot_id
+            ORDER BY h.id DESC
+            LIMIT ?
+            """,
+            (max(1, int(limite)),),
+        ).fetchall()
+
+
 inicializar_base_datos()

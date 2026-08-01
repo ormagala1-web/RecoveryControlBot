@@ -2,6 +2,8 @@ import asyncio
 import html
 import logging
 import os
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -17,7 +19,13 @@ from telegram.ext import (
     filters,
 )
 
-from database import actualizar_bot, obtener_bot
+from database import (
+    actualizar_bot,
+    obtener_bot,
+    obtener_respaldo,
+    obtener_respaldos_bot,
+    obtener_ultimos_respaldos,
+)
 from respaldos import crear_respaldo_bot, formatear_tamano
 from registro_bots import (
     borrar_bot,
@@ -34,7 +42,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-VERSION = "2.0 — RESPALDOS REALES"
+VERSION = "3.1 — HISTORIAL Y DESCARGA"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -829,6 +837,174 @@ async def guardar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 
+def formatear_fecha_historial(fecha_iso: str) -> str:
+    valor = str(fecha_iso or "").strip()
+    if not valor:
+        return "Sin fecha"
+
+    try:
+        fecha = datetime.fromisoformat(valor.replace("Z", "+00:00"))
+        return fecha.strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        return valor
+
+
+def texto_historial_bot(bot_id: int) -> str:
+    bot = obtener_bot(bot_id)
+    respaldos = obtener_respaldos_bot(bot_id, limite=20)
+
+    if not bot:
+        return "❌ Bot no encontrado."
+
+    nombre = html.escape(str(bot["nombre"] or "Bot"))
+
+    if not respaldos:
+        return (
+            "📂 <b>HISTORIAL DE RESPALDOS</b>\n\n"
+            f"🤖 <b>{nombre}</b>\n\n"
+            "Todavía no existen respaldos registrados."
+        )
+
+    return (
+        "📂 <b>HISTORIAL DE RESPALDOS</b>\n\n"
+        f"🤖 <b>{nombre}</b>\n"
+        f"📦 Total mostrado: <b>{len(respaldos)}</b>\n\n"
+        "Selecciona un respaldo para ver sus detalles."
+    )
+
+
+def teclado_historial_bot(bot_id: int) -> InlineKeyboardMarkup:
+    respaldos = obtener_respaldos_bot(bot_id, limite=20)
+    filas = []
+
+    for respaldo in respaldos:
+        fecha = formatear_fecha_historial(respaldo["fecha_creacion"])
+        tamano = formatear_tamano(respaldo["tamano_bytes"])
+        filas.append(
+            [
+                InlineKeyboardButton(
+                    f"📦 #{respaldo['id']} · {fecha} · {tamano}",
+                    callback_data=f"respaldo_detalle:{respaldo['id']}",
+                )
+            ]
+        )
+
+    filas.append(
+        [
+            InlineKeyboardButton(
+                "⬅️ Volver al bot",
+                callback_data=f"bot_detalle:{bot_id}",
+            ),
+            InlineKeyboardButton(
+                "🏠 Inicio",
+                callback_data="home",
+            ),
+        ]
+    )
+    return InlineKeyboardMarkup(filas)
+
+
+def texto_detalle_respaldo(respaldo_id: int) -> str:
+    respaldo = obtener_respaldo(respaldo_id)
+
+    if not respaldo:
+        return "❌ Respaldo no encontrado."
+
+    archivo = html.escape(str(respaldo["archivo"] or "Sin nombre"))
+    bot_nombre = html.escape(str(respaldo["bot_nombre"] or "Bot"))
+    fecha = html.escape(formatear_fecha_historial(respaldo["fecha_creacion"]))
+    tamano = html.escape(formatear_tamano(respaldo["tamano_bytes"]))
+    estado = html.escape(str(respaldo["estado"] or "DESCONOCIDO"))
+    tipo = html.escape(str(respaldo["tipo"] or "MANUAL"))
+    sha256 = html.escape(str(respaldo["sha256"] or "No disponible"))
+    observacion = html.escape(str(respaldo["observacion"] or "Sin observaciones"))
+
+    return (
+        "📦 <b>DETALLE DEL RESPALDO</b>\n\n"
+        f"🆔 ID: <code>{respaldo['id']}</code>\n"
+        f"🤖 Bot: <b>{bot_nombre}</b>\n"
+        f"📅 Fecha: <b>{fecha}</b>\n"
+        f"📏 Tamaño: <b>{tamano}</b>\n"
+        f"⚙️ Tipo: <b>{tipo}</b>\n"
+        f"📊 Estado: <b>{estado}</b>\n\n"
+        f"📄 Archivo:\n<code>{archivo}</code>\n\n"
+        f"🔐 SHA-256:\n<code>{sha256}</code>\n\n"
+        f"📝 Observación:\n{observacion}"
+    )
+
+
+def teclado_detalle_respaldo(
+    respaldo_id: int,
+    bot_id: int,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "⬇️ Descargar respaldo",
+                    callback_data=f"respaldo_descargar:{respaldo_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "♻️ Restaurar",
+                    callback_data=f"respaldo_restaurar:{respaldo_id}",
+                ),
+                InlineKeyboardButton(
+                    "🗑 Eliminar",
+                    callback_data=f"respaldo_eliminar:{respaldo_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Historial",
+                    callback_data=f"bot_history:{bot_id}",
+                ),
+                InlineKeyboardButton(
+                    "🏠 Inicio",
+                    callback_data="home",
+                ),
+            ],
+        ]
+    )
+
+
+async def descargar_respaldo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    respaldo_id: int,
+) -> None:
+    query = update.callback_query
+    respaldo = obtener_respaldo(respaldo_id)
+
+    if not respaldo:
+        await query.answer("El respaldo no existe.", show_alert=True)
+        return
+
+    ruta = Path(str(respaldo["ruta"] or ""))
+
+    if not ruta.exists() or not ruta.is_file():
+        await query.answer(
+            "El archivo del respaldo no está disponible.",
+            show_alert=True,
+        )
+        return
+
+    await query.answer("Preparando descarga…")
+
+    with ruta.open("rb") as archivo:
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=archivo,
+            filename=str(respaldo["archivo"]),
+            caption=(
+                f"📦 Respaldo #{respaldo_id}\n"
+                f"🤖 {respaldo['bot_nombre']}\n"
+                f"🔐 SHA-256: {respaldo['sha256'] or 'No disponible'}"
+            ),
+        )
+
+
 def teclado_confirmar_respaldo(bot_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -1060,17 +1236,56 @@ async def botones_generales(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return
 
-    if opcion.startswith("bot_history:"):
+    if opcion.startswith("respaldo_descargar:"):
+        respaldo_id = int(opcion.split(":")[1])
+        await descargar_respaldo(update, context, respaldo_id)
+        return
+
+    if opcion.startswith("respaldo_detalle:"):
+        respaldo_id = int(opcion.split(":")[1])
+        respaldo = obtener_respaldo(respaldo_id)
+
+        if not respaldo:
+            await query.answer("El respaldo no existe.", show_alert=True)
+            return
+
+        await query.edit_message_text(
+            texto_detalle_respaldo(respaldo_id),
+            parse_mode="HTML",
+            reply_markup=teclado_detalle_respaldo(
+                respaldo_id,
+                int(respaldo["bot_id"]),
+            ),
+        )
+        return
+
+    if opcion.startswith("respaldo_restaurar:"):
         await query.answer(
-            "Todavía no existen respaldos para este bot.",
+            "La restauración se habilitará en el Bloque 3.2.",
             show_alert=True,
+        )
+        return
+
+    if opcion.startswith("respaldo_eliminar:"):
+        await query.answer(
+            "La eliminación segura se habilitará en el Bloque 3.2.",
+            show_alert=True,
+        )
+        return
+
+    if opcion.startswith("bot_history:"):
+        bot_id = int(opcion.split(":")[1])
+        await query.edit_message_text(
+            texto_historial_bot(bot_id),
+            parse_mode="HTML",
+            reply_markup=teclado_historial_bot(bot_id),
         )
         return
 
     textos = {
         "backup": "💾 <b>CREAR RESPALDO</b>\n\nSelecciona <b>Bots Registrados</b>, abre un bot y pulsa <b>💾 Respaldar</b>.",
         "restore": "📥 <b>RESTAURAR RESPALDO</b>\n\nLa restauración estará disponible cuando existan respaldos registrados.",
-        "history": "📂 <b>HISTORIAL DE RESPALDOS</b>\n\nTodavía no existen respaldos registrados.",
+        "history": "📂 <b>HISTORIAL GENERAL</b>\n\nAbre <b>Bots Registrados</b>, selecciona un bot y pulsa <b>📂 Historial</b>.",
         "status": "❤️ <b>ESTADO DE BOTS</b>\n\nEl monitoreo automático se integrará en una próxima mejora.",
         "settings": "⚙️ <b>CONFIGURACIÓN</b>\n\nDesde <b>Bots Registrados</b> puedes agregar y editar los proyectos administrados.",
     }
