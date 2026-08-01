@@ -1,15 +1,20 @@
 import hashlib
-import os
+import json
+import shutil
+import subprocess
 import tarfile
-from datetime import datetime
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from database import obtener_bot, registrar_respaldo
 
 
 BASE_DIR = Path(__file__).resolve().parent
 BACKUPS_DIR = BASE_DIR / "backups"
+CACHE_DIR = BASE_DIR / "cache_repositorios"
 
 CARPETAS_EXCLUIDAS = {
     ".git",
@@ -39,6 +44,38 @@ def nombre_seguro(texto: str) -> str:
     return "".join(resultado).strip("_") or "bot"
 
 
+def normalizar_repositorio(url: str) -> str:
+    valor = str(url or "").strip()
+
+    if not valor:
+        raise ValueError("El bot no tiene configurado un repositorio GitHub.")
+
+    if valor.startswith("git@github.com:"):
+        ruta = valor.removeprefix("git@github.com:")
+        valor = f"https://github.com/{ruta}"
+
+    if valor.endswith(".git"):
+        valor = valor[:-4]
+
+    analizado = urlparse(valor)
+
+    if analizado.scheme not in {"http", "https"}:
+        raise ValueError("El repositorio debe usar una dirección HTTPS de GitHub.")
+
+    if analizado.netloc.lower() != "github.com":
+        raise ValueError("Actualmente solo se admiten repositorios de GitHub.")
+
+    partes = [parte for parte in analizado.path.split("/") if parte]
+
+    if len(partes) != 2:
+        raise ValueError(
+            "El repositorio debe tener el formato "
+            "https://github.com/usuario/proyecto"
+        )
+
+    return f"https://github.com/{partes[0]}/{partes[1]}"
+
+
 def calcular_sha256(ruta_archivo: Path) -> str:
     sha256 = hashlib.sha256()
 
@@ -54,6 +91,62 @@ def calcular_sha256(ruta_archivo: Path) -> str:
     return sha256.hexdigest()
 
 
+def ejecutar_git(
+    argumentos: list[str],
+    cwd: Optional[Path] = None,
+    timeout: int = 180,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *argumentos],
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def descargar_repositorio(
+    repositorio: str,
+    destino: Path,
+) -> dict:
+    resultado = ejecutar_git(
+        [
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            f"{repositorio}.git",
+            str(destino),
+        ]
+    )
+
+    if resultado.returncode != 0:
+        detalle = (
+            resultado.stderr.strip()
+            or resultado.stdout.strip()
+            or "Git no proporcionó detalles."
+        )
+        raise RuntimeError(
+            "No se pudo descargar el repositorio desde GitHub. "
+            f"Detalle: {detalle}"
+        )
+
+    commit = ejecutar_git(
+        ["rev-parse", "HEAD"],
+        cwd=destino,
+    )
+    rama = ejecutar_git(
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=destino,
+    )
+
+    return {
+        "commit": commit.stdout.strip() if commit.returncode == 0 else "",
+        "rama": rama.stdout.strip() if rama.returncode == 0 else "",
+    }
+
+
 def agregar_directorio(
     archivo_tar: tarfile.TarFile,
     ruta_origen: Path,
@@ -61,45 +154,44 @@ def agregar_directorio(
 ) -> int:
     archivos_agregados = 0
 
-    for raiz, carpetas, archivos in os.walk(
-        ruta_origen,
-        topdown=True,
-        followlinks=False,
-    ):
-        raiz_path = Path(raiz)
+    for ruta in sorted(ruta_origen.rglob("*")):
+        if ruta.is_symlink():
+            continue
 
-        carpetas[:] = [
-            carpeta
-            for carpeta in carpetas
-            if carpeta not in CARPETAS_EXCLUIDAS
-            and not (raiz_path / carpeta).is_symlink()
-        ]
+        relativa = ruta.relative_to(ruta_origen)
 
-        for nombre_archivo in archivos:
-            ruta_archivo = raiz_path / nombre_archivo
+        if any(parte in CARPETAS_EXCLUIDAS for parte in relativa.parts):
+            continue
 
-            if ruta_archivo.suffix.lower() in EXTENSIONES_EXCLUIDAS:
-                continue
+        if ruta.is_file() and ruta.suffix.lower() in EXTENSIONES_EXCLUIDAS:
+            continue
 
-            if ruta_archivo.is_symlink():
-                continue
-
-            try:
-                ruta_relativa = ruta_archivo.relative_to(ruta_origen)
-                ruta_interna = Path(nombre_raiz) / ruta_relativa
-
-                archivo_tar.add(
-                    ruta_archivo,
-                    arcname=str(ruta_interna),
-                    recursive=False,
-                )
-
-                archivos_agregados += 1
-
-            except (OSError, PermissionError):
-                continue
+        if ruta.is_file():
+            archivo_tar.add(
+                ruta,
+                arcname=str(Path(nombre_raiz) / relativa),
+                recursive=False,
+            )
+            archivos_agregados += 1
 
     return archivos_agregados
+
+
+def crear_manifest(
+    carpeta: Path,
+    datos: dict,
+) -> Path:
+    ruta_manifest = carpeta / "manifest.json"
+
+    with ruta_manifest.open("w", encoding="utf-8") as archivo:
+        json.dump(
+            datos,
+            archivo,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    return ruta_manifest
 
 
 def crear_respaldo_bot(
@@ -114,99 +206,90 @@ def crear_respaldo_bot(
             "mensaje": "No se encontró el bot registrado.",
         }
 
-    ruta_proyecto_texto = str(
-        bot["ruta_proyecto"] or ""
-    ).strip()
-
-    if not ruta_proyecto_texto:
+    try:
+        repositorio = normalizar_repositorio(bot["repositorio"])
+    except ValueError as error:
         return {
             "correcto": False,
-            "mensaje": "El bot no tiene configurada la ruta del proyecto.",
-        }
-
-    ruta_proyecto = Path(ruta_proyecto_texto)
-
-    if not ruta_proyecto.exists():
-        return {
-            "correcto": False,
-            "mensaje": (
-                "La ruta del proyecto no existe en este servidor:\n"
-                f"{ruta_proyecto}"
-            ),
-        }
-
-    if not ruta_proyecto.is_dir():
-        return {
-            "correcto": False,
-            "mensaje": (
-                "La ruta configurada no es una carpeta:\n"
-                f"{ruta_proyecto}"
-            ),
+            "mensaje": str(error),
         }
 
     nombre_bot = nombre_seguro(bot["nombre"])
-    fecha = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fecha_local = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fecha_utc = datetime.now(timezone.utc).isoformat()
 
     carpeta_bot = BACKUPS_DIR / nombre_bot
     carpeta_bot.mkdir(parents=True, exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    nombre_archivo = f"{nombre_bot}_{fecha}.tar.gz"
+    nombre_archivo = f"{nombre_bot}_{fecha_local}_github.tar.gz"
     ruta_respaldo = carpeta_bot / nombre_archivo
 
-    ruta_base_texto = str(
-        bot["ruta_base_datos"] or ""
-    ).strip()
+    temporario_base = CACHE_DIR / f"{nombre_bot}_{fecha_local}"
 
-    ruta_base: Optional[Path] = (
-        Path(ruta_base_texto)
-        if ruta_base_texto
-        else None
-    )
-
-    archivos_agregados = 0
-    base_incluida = False
+    if temporario_base.exists():
+        shutil.rmtree(temporario_base, ignore_errors=True)
 
     try:
+        temporario_base.mkdir(parents=True, exist_ok=False)
+        carpeta_repo = temporario_base / "repositorio"
+
+        datos_git = descargar_repositorio(
+            repositorio,
+            carpeta_repo,
+        )
+
+        manifest = {
+            "version_manifest": 1,
+            "tipo_respaldo": "CODIGO_GITHUB",
+            "fecha_utc": fecha_utc,
+            "bot_id": int(bot_id),
+            "bot_nombre": str(bot["nombre"] or ""),
+            "bot_username": str(bot["username"] or ""),
+            "servidor_origen": str(bot["servidor"] or ""),
+            "repositorio": repositorio,
+            "rama": datos_git.get("rama", ""),
+            "commit": datos_git.get("commit", ""),
+            "base_datos_incluida": False,
+            "observacion": (
+                "Este respaldo contiene el código descargado desde GitHub. "
+                "La base de datos activa alojada en JustRunMy se integrará "
+                "mediante el módulo remoto de datos."
+            ),
+        }
+
+        ruta_manifest = crear_manifest(
+            temporario_base,
+            manifest,
+        )
+
+        archivos_agregados = 0
+
         with tarfile.open(
             ruta_respaldo,
             mode="w:gz",
         ) as archivo_tar:
             archivos_agregados += agregar_directorio(
                 archivo_tar,
-                ruta_proyecto,
-                nombre_raiz="proyecto",
+                carpeta_repo,
+                nombre_raiz="codigo",
             )
 
-            if (
-                ruta_base
-                and ruta_base.exists()
-                and ruta_base.is_file()
-            ):
-                try:
-                    ruta_base.relative_to(ruta_proyecto)
-                    base_incluida = True
+            archivo_tar.add(
+                ruta_manifest,
+                arcname="manifest.json",
+                recursive=False,
+            )
+            archivos_agregados += 1
 
-                except ValueError:
-                    archivo_tar.add(
-                        ruta_base,
-                        arcname=(
-                            f"base_datos_externa/"
-                            f"{ruta_base.name}"
-                        ),
-                        recursive=False,
-                    )
-
-                    archivos_agregados += 1
-                    base_incluida = True
-
-        if archivos_agregados == 0:
+        if archivos_agregados <= 1:
             ruta_respaldo.unlink(missing_ok=True)
 
             return {
                 "correcto": False,
                 "mensaje": (
-                    "No se encontraron archivos válidos "
-                    "para incluir en el respaldo."
+                    "El repositorio fue descargado, pero no contenía "
+                    "archivos válidos para respaldar."
                 ),
             }
 
@@ -222,31 +305,60 @@ def crear_respaldo_bot(
             tamano_bytes=tamano_bytes,
             sha256=sha256,
             observacion=(
-                f"Archivos incluidos: {archivos_agregados}. "
-                f"Base de datos incluida: "
-                f"{'Sí' if base_incluida else 'No'}."
+                f"Respaldo remoto de código GitHub. "
+                f"Repositorio: {repositorio}. "
+                f"Rama: {datos_git.get('rama') or 'desconocida'}. "
+                f"Commit: {datos_git.get('commit') or 'desconocido'}. "
+                f"Archivos incluidos: {archivos_agregados - 1}. "
+                "Base de datos activa de JustRunMy: pendiente."
             ),
         )
 
         return {
             "correcto": True,
-            "mensaje": "Respaldo creado correctamente.",
+            "mensaje": "Respaldo del código GitHub creado correctamente.",
             "respaldo_id": respaldo_id,
             "archivo": nombre_archivo,
             "ruta": str(ruta_respaldo),
             "tamano_bytes": tamano_bytes,
             "sha256": sha256,
-            "archivos_agregados": archivos_agregados,
-            "base_incluida": base_incluida,
+            "archivos_agregados": archivos_agregados - 1,
+            "base_incluida": False,
+            "repositorio": repositorio,
+            "rama": datos_git.get("rama", ""),
+            "commit": datos_git.get("commit", ""),
+            "tipo_respaldo": "CODIGO_GITHUB",
         }
 
-    except (OSError, PermissionError, tarfile.TarError) as error:
+    except subprocess.TimeoutExpired:
         ruta_respaldo.unlink(missing_ok=True)
 
         return {
             "correcto": False,
-            "mensaje": f"No se pudo crear el respaldo: {error}",
+            "mensaje": (
+                "GitHub tardó demasiado en responder. "
+                "Intenta crear el respaldo nuevamente."
+            ),
         }
+
+    except (
+        OSError,
+        PermissionError,
+        RuntimeError,
+        tarfile.TarError,
+    ) as error:
+        ruta_respaldo.unlink(missing_ok=True)
+
+        return {
+            "correcto": False,
+            "mensaje": f"No se pudo crear el respaldo remoto: {error}",
+        }
+
+    finally:
+        shutil.rmtree(
+            temporario_base,
+            ignore_errors=True,
+        )
 
 
 def formatear_tamano(tamano_bytes: Optional[int]) -> str:
