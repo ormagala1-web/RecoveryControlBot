@@ -73,7 +73,7 @@ def normalizar_repositorio(url: str) -> str:
             "https://github.com/usuario/proyecto"
         )
 
-    return f"https://github.com/{partes[0]}/{partes[1]}"
+    return f"git@github.com:{partes[0]}/{partes[1]}"
 
 
 def calcular_sha256(ruta_archivo: Path) -> str:
