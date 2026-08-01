@@ -5,6 +5,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -31,7 +32,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-VERSION = "1.2 — EDICIÓN COMPLETA DE BOTS"
+VERSION = "1.3 — MENÚ ÚNICO Y LIMPIEZA VISUAL"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -74,6 +75,87 @@ def limpiar_flujos(context: ContextTypes.DEFAULT_TYPE) -> None:
         "edicion_origen",
     ):
         context.user_data.pop(clave, None)
+
+
+
+def registrar_panel(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    message_id: int,
+) -> None:
+    context.user_data["panel_chat_id"] = int(chat_id)
+    context.user_data["panel_message_id"] = int(message_id)
+
+
+def registrar_panel_desde_query(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if query and query.message:
+        registrar_panel(
+            context,
+            query.message.chat_id,
+            query.message.message_id,
+        )
+
+
+async def borrar_mensaje_seguro(mensaje) -> None:
+    if not mensaje:
+        return
+    try:
+        await mensaje.delete()
+    except TelegramError:
+        pass
+
+
+async def actualizar_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    texto: str,
+    parse_mode: Optional[str] = None,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+) -> None:
+    """Mantiene un único panel y elimina el texto escrito por el usuario."""
+    mensaje_usuario = update.effective_message
+    chat = update.effective_chat
+
+    # Los comandos y respuestas manuales no deben quedar visibles.
+    if mensaje_usuario and not update.callback_query:
+        await borrar_mensaje_seguro(mensaje_usuario)
+
+    chat_id = context.user_data.get("panel_chat_id")
+    message_id = context.user_data.get("panel_message_id")
+
+    if chat_id and message_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=texto,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+            )
+            return
+        except TelegramError:
+            try:
+                await context.bot.delete_message(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                )
+            except TelegramError:
+                pass
+
+    if not chat:
+        return
+
+    nuevo_panel = await context.bot.send_message(
+        chat_id=chat.id,
+        text=texto,
+        parse_mode=parse_mode,
+        reply_markup=reply_markup,
+    )
+    registrar_panel(context, nuevo_panel.chat_id, nuevo_panel.message_id)
+
 
 
 def teclado_principal() -> InlineKeyboardMarkup:
@@ -221,13 +303,14 @@ async def mostrar_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"Versión: <b>{html.escape(VERSION)}</b>"
     )
     if update.callback_query:
+        registrar_panel_desde_query(update.callback_query, context)
         await update.callback_query.edit_message_text(
             texto,
             parse_mode="HTML",
             reply_markup=teclado_principal(),
         )
     else:
-        await update.effective_message.reply_text(
+        await actualizar_panel(update, context,
             texto,
             parse_mode="HTML",
             reply_markup=teclado_principal(),
@@ -237,7 +320,7 @@ async def mostrar_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not autorizado(user.id):
-        await update.effective_message.reply_text("⛔ No tienes autorización para usar este bot.")
+        await actualizar_panel(update, context,"⛔ No tienes autorización para usar este bot.")
         return
     limpiar_flujos(context)
     await mostrar_inicio(update, context)
@@ -245,7 +328,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cancelar_comando(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     limpiar_flujos(context)
-    await update.effective_message.reply_text(
+    await actualizar_panel(update, context,
         "❌ Operación cancelada.",
         reply_markup=teclado_principal(),
     )
@@ -255,6 +338,8 @@ async def cancelar_comando(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def iniciar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     if not autorizado(query.from_user.id):
         await query.answer("No autorizado.", show_alert=True)
         return ConversationHandler.END
@@ -274,11 +359,11 @@ async def iniciar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def recibir_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     nombre = str(update.effective_message.text or "").strip()
     if not nombre:
-        await update.effective_message.reply_text("⚠️ El nombre no puede estar vacío.")
+        await actualizar_panel(update, context,"⚠️ El nombre no puede estar vacío.")
         return REGISTRO_NOMBRE
 
     context.user_data.setdefault("registro_bot", {})["nombre"] = nombre
-    await update.effective_message.reply_text(
+    await actualizar_panel(update, context,
         "👤 Escribe el <b>usuario de Telegram</b> del bot.\n\n"
         "Ejemplo:\n<code>@PublicidadControlStreamingBot</code>\n\n"
         "También puedes omitirlo.",
@@ -293,7 +378,7 @@ async def recibir_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "username",
         update.effective_message.text,
     )
-    await update.effective_message.reply_text(
+    await actualizar_panel(update, context,
         "📝 Escribe una <b>descripción</b> del bot.\n\nTambién puedes omitirla.",
         parse_mode="HTML",
         reply_markup=teclado_omitir_registro(),
@@ -305,7 +390,7 @@ async def recibir_descripcion(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["registro_bot"]["descripcion"] = str(
         update.effective_message.text or ""
     ).strip()
-    await update.effective_message.reply_text(
+    await actualizar_panel(update, context,
         "🌐 Escribe la dirección del <b>repositorio GitHub</b>.\n\nTambién puedes omitirla.",
         parse_mode="HTML",
         reply_markup=teclado_omitir_registro(),
@@ -317,7 +402,7 @@ async def recibir_repositorio(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["registro_bot"]["repositorio"] = str(
         update.effective_message.text or ""
     ).strip()
-    await update.effective_message.reply_text(
+    await actualizar_panel(update, context,
         "🖥 Escribe el nombre del <b>servidor o plataforma</b>.\n\n"
         "Ejemplo:\n<code>JustRunMy</code>\n<code>Oracle Cloud</code>\n\n"
         "También puedes omitirlo.",
@@ -331,7 +416,7 @@ async def recibir_servidor(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data["registro_bot"]["servidor"] = str(
         update.effective_message.text or ""
     ).strip()
-    await update.effective_message.reply_text(
+    await actualizar_panel(update, context,
         "📂 Escribe la <b>ruta del proyecto</b> en el servidor.\n\n"
         "Ejemplo:\n<code>/opt/PublicidadBot</code>\n\nTambién puedes omitirla.",
         parse_mode="HTML",
@@ -344,7 +429,7 @@ async def recibir_ruta_proyecto(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["registro_bot"]["ruta_proyecto"] = str(
         update.effective_message.text or ""
     ).strip()
-    await update.effective_message.reply_text(
+    await actualizar_panel(update, context,
         "🗃 Escribe la <b>ruta de la base de datos</b>.\n\n"
         "Ejemplo:\n<code>/app/data/publicidad.db</code>\n\nTambién puedes omitirla.",
         parse_mode="HTML",
@@ -357,7 +442,7 @@ async def recibir_ruta_database(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["registro_bot"]["ruta_base_datos"] = str(
         update.effective_message.text or ""
     ).strip()
-    await update.effective_message.reply_text(
+    await actualizar_panel(update, context,
         resumen_registro(context.user_data["registro_bot"]),
         parse_mode="HTML",
         reply_markup=teclado_confirmar_registro(),
@@ -374,6 +459,8 @@ async def omitir_y_avanzar(
 ) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     context.user_data["registro_bot"][campo] = None
     await query.edit_message_text(
         texto,
@@ -436,6 +523,8 @@ async def registro_omitir_ruta_proyecto(update: Update, context: ContextTypes.DE
 async def registro_omitir_ruta_database(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     context.user_data["registro_bot"]["ruta_base_datos"] = None
     await query.edit_message_text(
         resumen_registro(context.user_data["registro_bot"]),
@@ -451,6 +540,8 @@ async def mostrar_confirmacion_registro(
 ) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     datos = context.user_data.get("registro_bot")
     if not datos:
         await query.edit_message_text(
@@ -470,6 +561,8 @@ async def mostrar_confirmacion_registro(
 async def abrir_editor_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     await query.edit_message_text(
         texto_editor("registro"),
         parse_mode="HTML",
@@ -484,6 +577,8 @@ async def seleccionar_campo_registro(
 ) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     campo = query.data.split(":", 1)[1]
     if campo not in CAMPOS:
         await query.answer("Campo no válido.", show_alert=True)
@@ -507,6 +602,8 @@ async def seleccionar_campo_registro(
 async def abrir_editor_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     bot_id = int(query.data.split(":")[1])
     bot = obtener_bot(bot_id)
     if not bot:
@@ -526,6 +623,8 @@ async def abrir_editor_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def seleccionar_campo_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     _, bot_id_texto, campo = query.data.split(":", 2)
     bot_id = int(bot_id_texto)
     bot = obtener_bot(bot_id)
@@ -556,7 +655,7 @@ async def guardar_valor_editado(
     origen = context.user_data.get("edicion_origen")
     if campo not in CAMPOS or origen not in {"registro", "guardado"}:
         limpiar_flujos(context)
-        await update.effective_message.reply_text(
+        await actualizar_panel(update, context,
             "⚠️ La edición expiró.",
             reply_markup=teclado_principal(),
         )
@@ -565,14 +664,14 @@ async def guardar_valor_editado(
     valor = normalizar_valor(campo, update.effective_message.text)
     _, permite_vacio = CAMPOS[campo]
     if not valor and not permite_vacio:
-        await update.effective_message.reply_text("⚠️ Este campo no puede quedar vacío.")
+        await actualizar_panel(update, context,"⚠️ Este campo no puede quedar vacío.")
         return EDICION_VALOR
 
     if origen == "registro":
         context.user_data.setdefault("registro_bot", {})[campo] = valor or None
         context.user_data.pop("edicion_campo", None)
         context.user_data.pop("edicion_origen", None)
-        await update.effective_message.reply_text(
+        await actualizar_panel(update, context,
             resumen_registro(context.user_data["registro_bot"]),
             parse_mode="HTML",
             reply_markup=teclado_confirmar_registro(),
@@ -585,14 +684,14 @@ async def guardar_valor_editado(
     texto = texto_detalle_bot(bot_id)
 
     if not actualizado or not bot or not texto:
-        await update.effective_message.reply_text(
+        await actualizar_panel(update, context,
             "❌ No se pudo actualizar el dato.",
             reply_markup=teclado_principal(),
         )
         limpiar_flujos(context)
         return ConversationHandler.END
 
-    await update.effective_message.reply_text(
+    await actualizar_panel(update, context,
         "✅ <b>INFORMACIÓN ACTUALIZADA</b>\n\n" + texto,
         parse_mode="HTML",
         reply_markup=teclado_detalle_bot(bot_id, bot["estado"]),
@@ -607,6 +706,8 @@ async def vaciar_valor_editado(
 ) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     campo = context.user_data.get("edicion_campo")
     origen = context.user_data.get("edicion_origen")
     if campo not in CAMPOS or not CAMPOS[campo][1]:
@@ -643,6 +744,8 @@ async def vaciar_valor_editado(
 async def cancelar_edicion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     origen = context.user_data.get("edicion_origen")
     bot_id = context.user_data.get("edicion_bot_id")
     context.user_data.pop("edicion_campo", None)
@@ -684,6 +787,8 @@ async def cancelar_registro_callback(
 ) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     limpiar_flujos(context)
     await query.edit_message_text(
         "❌ Registro cancelado.",
@@ -695,6 +800,8 @@ async def cancelar_registro_callback(
 async def guardar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
     datos = context.user_data.get("registro_bot", {})
     correcto, mensaje, bot_id = crear_bot_desde_datos(datos)
 
@@ -723,6 +830,8 @@ async def guardar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def botones_generales(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+
+    registrar_panel_desde_query(query, context)
 
     if not autorizado(query.from_user.id):
         await query.answer("No autorizado.", show_alert=True)
