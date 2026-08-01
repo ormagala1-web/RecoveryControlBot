@@ -42,7 +42,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-VERSION = "3.1 — HISTORIAL Y DESCARGA"
+VERSION = "3.2 — DESCARGA TEMPORAL LIMPIA"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -969,6 +969,23 @@ def teclado_detalle_respaldo(
     )
 
 
+async def eliminar_documento_temporal(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    message_id: int,
+    segundos: int = 600,
+) -> None:
+    await asyncio.sleep(segundos)
+
+    try:
+        await context.bot.delete_message(
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+    except TelegramError:
+        pass
+
+
 async def descargar_respaldo(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -990,19 +1007,40 @@ async def descargar_respaldo(
         )
         return
 
-    await query.answer("Preparando descarga…")
+    await query.answer("Preparando descarga temporal…")
 
     with ruta.open("rb") as archivo:
-        await context.bot.send_document(
+        documento = await context.bot.send_document(
             chat_id=query.message.chat_id,
             document=archivo,
             filename=str(respaldo["archivo"]),
             caption=(
                 f"📦 Respaldo #{respaldo_id}\n"
                 f"🤖 {respaldo['bot_nombre']}\n"
-                f"🔐 SHA-256: {respaldo['sha256'] or 'No disponible'}"
+                f"🔐 SHA-256: {respaldo['sha256'] or 'No disponible'}\n\n"
+                "⏳ Este archivo se eliminará automáticamente en 10 minutos."
             ),
         )
+
+    asyncio.create_task(
+        eliminar_documento_temporal(
+            context,
+            documento.chat_id,
+            documento.message_id,
+            segundos=600,
+        )
+    )
+
+    await query.edit_message_text(
+        texto_detalle_respaldo(respaldo_id)
+        + "\n\n✅ <b>DESCARGA TEMPORAL ENVIADA</b>\n"
+        "El archivo desaparecerá del chat en 10 minutos.",
+        parse_mode="HTML",
+        reply_markup=teclado_detalle_respaldo(
+            respaldo_id,
+            int(respaldo["bot_id"]),
+        ),
+    )
 
 
 def teclado_confirmar_respaldo(bot_id: int) -> InlineKeyboardMarkup:
