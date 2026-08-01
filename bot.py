@@ -1,3 +1,4 @@
+import asyncio
 import html
 import logging
 import os
@@ -17,6 +18,7 @@ from telegram.ext import (
 )
 
 from database import actualizar_bot, obtener_bot
+from respaldos import crear_respaldo_bot, formatear_tamano
 from registro_bots import (
     borrar_bot,
     cambiar_estado,
@@ -32,7 +34,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-VERSION = "1.3 — MENÚ ÚNICO Y LIMPIEZA VISUAL"
+VERSION = "2.0 — RESPALDOS REALES"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -827,6 +829,140 @@ async def guardar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 
+def teclado_confirmar_respaldo(bot_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Crear respaldo ahora",
+                    callback_data=f"bot_backup_confirmar:{bot_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Regresar",
+                    callback_data=f"bot_detalle:{bot_id}",
+                ),
+                InlineKeyboardButton(
+                    "🏠 Inicio",
+                    callback_data="home",
+                ),
+            ],
+        ]
+    )
+
+
+def teclado_resultado_respaldo(bot_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📂 Ver historial",
+                    callback_data=f"bot_history:{bot_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Volver al bot",
+                    callback_data=f"bot_detalle:{bot_id}",
+                ),
+                InlineKeyboardButton(
+                    "🏠 Inicio",
+                    callback_data="home",
+                ),
+            ],
+        ]
+    )
+
+
+async def solicitar_respaldo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    bot_id: int,
+) -> None:
+    query = update.callback_query
+    bot = obtener_bot(bot_id)
+
+    if not bot:
+        await query.answer("El bot no existe.", show_alert=True)
+        return
+
+    nombre = html.escape(str(bot["nombre"] or "Bot sin nombre"))
+    ruta = html.escape(str(bot["ruta_proyecto"] or "No configurada"))
+    base = html.escape(str(bot["ruta_base_datos"] or "No configurada"))
+
+    await query.edit_message_text(
+        "💾 <b>CONFIRMAR RESPALDO</b>\n\n"
+        f"🤖 Bot: <b>{nombre}</b>\n\n"
+        f"📂 Proyecto:\n<code>{ruta}</code>\n\n"
+        f"🗃 Base de datos:\n<code>{base}</code>\n\n"
+        "El sistema creará un archivo comprimido, calculará su "
+        "firma SHA-256 y lo registrará en el historial.",
+        parse_mode="HTML",
+        reply_markup=teclado_confirmar_respaldo(bot_id),
+    )
+
+
+async def ejecutar_respaldo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    bot_id: int,
+) -> None:
+    query = update.callback_query
+    bot = obtener_bot(bot_id)
+
+    if not bot:
+        await query.answer("El bot no existe.", show_alert=True)
+        return
+
+    nombre = html.escape(str(bot["nombre"] or "Bot sin nombre"))
+
+    await query.edit_message_text(
+        "⏳ <b>CREANDO RESPALDO</b>\n\n"
+        f"🤖 {nombre}\n\n"
+        "No cierres el panel. El proceso puede tardar unos segundos.",
+        parse_mode="HTML",
+    )
+
+    resultado = await asyncio.to_thread(
+        crear_respaldo_bot,
+        bot_id,
+        "MANUAL",
+    )
+
+    if not resultado.get("correcto"):
+        mensaje = html.escape(
+            str(resultado.get("mensaje") or "Error desconocido.")
+        )
+        await query.edit_message_text(
+            "❌ <b>RESPALDO NO CREADO</b>\n\n"
+            f"{mensaje}",
+            parse_mode="HTML",
+            reply_markup=teclado_resultado_respaldo(bot_id),
+        )
+        return
+
+    archivo = html.escape(str(resultado.get("archivo") or "Sin nombre"))
+    tamano = html.escape(
+        formatear_tamano(resultado.get("tamano_bytes"))
+    )
+    cantidad = int(resultado.get("archivos_agregados") or 0)
+    base_incluida = "Sí" if resultado.get("base_incluida") else "No"
+    sha256 = html.escape(str(resultado.get("sha256") or ""))
+
+    await query.edit_message_text(
+        "✅ <b>RESPALDO CREADO CORRECTAMENTE</b>\n\n"
+        f"🤖 Bot: <b>{nombre}</b>\n"
+        f"📦 Archivo: <code>{archivo}</code>\n"
+        f"📏 Tamaño: <b>{tamano}</b>\n"
+        f"📄 Archivos incluidos: <b>{cantidad}</b>\n"
+        f"🗃 Base de datos incluida: <b>{base_incluida}</b>\n\n"
+        f"🔐 SHA-256:\n<code>{sha256}</code>",
+        parse_mode="HTML",
+        reply_markup=teclado_resultado_respaldo(bot_id),
+    )
+
+
 async def botones_generales(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -907,11 +1043,14 @@ async def botones_generales(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return
 
+    if opcion.startswith("bot_backup_confirmar:"):
+        bot_id = int(opcion.split(":")[1])
+        await ejecutar_respaldo(update, context, bot_id)
+        return
+
     if opcion.startswith("bot_backup:"):
-        await query.answer(
-            "El respaldo real se integrará en la siguiente mejora.",
-            show_alert=True,
-        )
+        bot_id = int(opcion.split(":")[1])
+        await solicitar_respaldo(update, context, bot_id)
         return
 
     if opcion.startswith("bot_restore:"):
@@ -929,7 +1068,7 @@ async def botones_generales(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     textos = {
-        "backup": "💾 <b>CREAR RESPALDO</b>\n\nPrimero registra los bots que deseas proteger.",
+        "backup": "💾 <b>CREAR RESPALDO</b>\n\nSelecciona <b>Bots Registrados</b>, abre un bot y pulsa <b>💾 Respaldar</b>.",
         "restore": "📥 <b>RESTAURAR RESPALDO</b>\n\nLa restauración estará disponible cuando existan respaldos registrados.",
         "history": "📂 <b>HISTORIAL DE RESPALDOS</b>\n\nTodavía no existen respaldos registrados.",
         "status": "❤️ <b>ESTADO DE BOTS</b>\n\nEl monitoreo automático se integrará en una próxima mejora.",
