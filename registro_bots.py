@@ -1,6 +1,8 @@
 import html
 import sqlite3
+from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -15,11 +17,13 @@ from database import (
 )
 
 
+ZONA_PERU = ZoneInfo("America/Lima")
+
 ESTADOS_VISUALES = {
-    "ACTIVO": "🟢",
-    "PAUSADO": "🟡",
-    "INACTIVO": "⚪",
-    "ERROR": "🔴",
+    "ACTIVO": ("🟢", "Activo"),
+    "PAUSADO": ("🟡", "Pausado"),
+    "INACTIVO": ("⚪", "Inactivo"),
+    "ERROR": ("🔴", "Error"),
 }
 
 
@@ -33,6 +37,29 @@ def normalizar_username(username: Optional[str]) -> Optional[str]:
         valor = f"@{valor}"
 
     return valor
+
+
+def formatear_fecha_peru(fecha_iso: Optional[str]) -> str:
+    valor = str(fecha_iso or "").strip()
+
+    if not valor:
+        return "Sin fecha"
+
+    try:
+        fecha = datetime.fromisoformat(valor.replace("Z", "+00:00"))
+
+        if fecha.tzinfo is None:
+            fecha = fecha.replace(tzinfo=timezone.utc)
+
+        fecha_peru = fecha.astimezone(ZONA_PERU)
+        return fecha_peru.strftime("%d/%m/%Y %H:%M")
+    except (TypeError, ValueError):
+        return valor
+
+
+def obtener_estado_visual(estado: Optional[str]) -> tuple[str, str]:
+    clave = str(estado or "INACTIVO").upper()
+    return ESTADOS_VISUALES.get(clave, ("⚪", clave.title()))
 
 
 def texto_lista_bots() -> str:
@@ -53,14 +80,13 @@ def texto_lista_bots() -> str:
     ]
 
     for bot in bots:
-        estado = str(bot["estado"] or "INACTIVO").upper()
-        icono = ESTADOS_VISUALES.get(estado, "⚪")
+        icono, estado_legible = obtener_estado_visual(bot["estado"])
         nombre = html.escape(str(bot["nombre"] or "Sin nombre"))
         username = html.escape(str(bot["username"] or "Sin usuario"))
 
         lineas.append(
-            f"{icono} <b>#{bot['id']} · {nombre}</b>\n"
-            f"   {username}"
+            f"{icono} <b>{nombre}</b>\n"
+            f"   {username} · {html.escape(estado_legible)}"
         )
 
     return "\n".join(lineas)
@@ -71,8 +97,7 @@ def teclado_lista_bots() -> InlineKeyboardMarkup:
     filas = []
 
     for bot in bots:
-        estado = str(bot["estado"] or "INACTIVO").upper()
-        icono = ESTADOS_VISUALES.get(estado, "⚪")
+        icono, _ = obtener_estado_visual(bot["estado"])
         nombre = str(bot["nombre"] or "Sin nombre")
 
         filas.append(
@@ -100,7 +125,7 @@ def teclado_lista_bots() -> InlineKeyboardMarkup:
                 callback_data="bots",
             ),
             InlineKeyboardButton(
-                "⬅️ Menú Principal",
+                "🏠 Menú Principal",
                 callback_data="home",
             ),
         ]
@@ -124,8 +149,7 @@ def texto_detalle_bot(bot_id: int) -> Optional[str]:
     if not bot:
         return None
 
-    estado = str(bot["estado"] or "INACTIVO").upper()
-    icono = ESTADOS_VISUALES.get(estado, "⚪")
+    icono_estado, estado_legible = obtener_estado_visual(bot["estado"])
 
     nombre = html.escape(str(bot["nombre"] or "Sin nombre"))
     username = html.escape(str(bot["username"] or "No configurado"))
@@ -144,19 +168,25 @@ def texto_detalle_bot(bot_id: int) -> Optional[str]:
     ruta_base = html.escape(
         str(bot["ruta_base_datos"] or "No configurada")
     )
-    fecha = html.escape(str(bot["fecha_registro"] or "Sin fecha"))
+    fecha = html.escape(formatear_fecha_peru(bot["fecha_registro"]))
 
     return (
-        f"{icono} <b>{nombre}</b>\n\n"
-        f"🆔 ID interno: <code>{bot['id']}</code>\n"
+        f"{icono_estado} <b>{nombre}</b>\n\n"
+        f"🆔 ID: <code>{bot['id']}</code>\n"
         f"👤 Usuario: {username}\n"
-        f"📊 Estado: <b>{html.escape(estado)}</b>\n\n"
-        f"📝 Descripción:\n{descripcion}\n\n"
-        f"🌐 Repositorio:\n{repositorio}\n\n"
-        f"🖥 Servidor:\n{servidor}\n\n"
-        f"📂 Ruta del proyecto:\n{ruta_proyecto}\n\n"
-        f"🗃 Base de datos:\n{ruta_base}\n\n"
-        f"📅 Registrado:\n{fecha}"
+        f"{icono_estado} Estado: <b>{html.escape(estado_legible)}</b>\n\n"
+        f"📝 <b>Descripción</b>\n"
+        f"{descripcion}\n\n"
+        f"🌐 <b>Repositorio</b>\n"
+        f"{repositorio}\n\n"
+        f"🖥 <b>Servidor</b>\n"
+        f"{servidor}\n\n"
+        f"📂 <b>Ruta del proyecto</b>\n"
+        f"{ruta_proyecto}\n\n"
+        f"🗃 <b>Base de datos</b>\n"
+        f"{ruta_base}\n\n"
+        f"📅 <b>Registrado</b>\n"
+        f"{fecha} (Perú)"
     )
 
 
@@ -165,28 +195,19 @@ def teclado_detalle_bot(
     estado: str,
 ) -> InlineKeyboardMarkup:
     estado = str(estado or "INACTIVO").upper()
-    filas = []
 
     if estado == "ACTIVO":
-        filas.append(
-            [
-                InlineKeyboardButton(
-                    "⏸ Pausar",
-                    callback_data=f"bot_estado:{bot_id}:PAUSADO",
-                )
-            ]
+        boton_estado = InlineKeyboardButton(
+            "⏸ Pausar",
+            callback_data=f"bot_estado:{bot_id}:PAUSADO",
         )
     else:
-        filas.append(
-            [
-                InlineKeyboardButton(
-                    "▶️ Activar",
-                    callback_data=f"bot_estado:{bot_id}:ACTIVO",
-                )
-            ]
+        boton_estado = InlineKeyboardButton(
+            "▶️ Activar",
+            callback_data=f"bot_estado:{bot_id}:ACTIVO",
         )
 
-    filas.extend(
+    return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
@@ -209,18 +230,19 @@ def teclado_detalle_bot(
                 ),
             ],
             [
+                boton_estado,
                 InlineKeyboardButton(
                     "🗑 Eliminar",
                     callback_data=f"bot_eliminar:{bot_id}",
-                )
+                ),
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ Bots Registrados",
+                    "⬅️ Bots",
                     callback_data="bots",
                 ),
                 InlineKeyboardButton(
-                    "🏠 Menú Principal",
+                    "🏠 Inicio",
                     callback_data="home",
                 ),
             ],
@@ -232,8 +254,6 @@ def teclado_detalle_bot(
             ],
         ]
     )
-
-    return InlineKeyboardMarkup(filas)
 
 
 def teclado_confirmar_eliminacion(
@@ -315,7 +335,8 @@ def cambiar_estado(
         if not actualizado:
             return False, "No se encontró el bot."
 
-        return True, f"Estado cambiado a {estado.upper()}."
+        _, estado_legible = obtener_estado_visual(estado)
+        return True, f"Estado cambiado a {estado_legible}."
 
     except ValueError as error:
         return False, str(error)
