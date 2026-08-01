@@ -1,6 +1,7 @@
 import html
 import logging
 import os
+from typing import Optional
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -14,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-from database import obtener_bot
+from database import actualizar_bot, obtener_bot
 from registro_bots import (
     borrar_bot,
     cambiar_estado,
@@ -30,8 +31,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
-VERSION = "1.1 — REGISTRO DE BOTS"
+VERSION = "1.2 — EDICIÓN COMPLETA DE BOTS"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -47,94 +47,67 @@ logging.basicConfig(
     REGISTRO_RUTA_PROYECTO,
     REGISTRO_RUTA_DATABASE,
     REGISTRO_CONFIRMACION,
-) = range(8)
+    EDICION_VALOR,
+) = range(9)
+
+CAMPOS = {
+    "nombre": ("📛 Nombre", False),
+    "username": ("👤 Usuario", True),
+    "descripcion": ("📝 Descripción", True),
+    "repositorio": ("🌐 Repositorio", True),
+    "servidor": ("🖥 Servidor", True),
+    "ruta_proyecto": ("📂 Ruta del proyecto", True),
+    "ruta_base_datos": ("🗃 Ruta de la base de datos", True),
+}
 
 
 def autorizado(user_id: int) -> bool:
     return ADMIN_ID == 0 or int(user_id) == ADMIN_ID
 
 
-def limpiar_registro(context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data.pop("registro_bot", None)
+def limpiar_flujos(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for clave in (
+        "registro_bot",
+        "registro_campo",
+        "edicion_bot_id",
+        "edicion_campo",
+        "edicion_origen",
+    ):
+        context.user_data.pop(clave, None)
 
 
 def teclado_principal() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("🤖 Bots Registrados", callback_data="bots")],
             [
-                InlineKeyboardButton(
-                    "🤖 Bots Registrados",
-                    callback_data="bots",
-                )
+                InlineKeyboardButton("💾 Crear Respaldo", callback_data="backup"),
+                InlineKeyboardButton("📥 Restaurar Respaldo", callback_data="restore"),
             ],
             [
-                InlineKeyboardButton(
-                    "💾 Crear Respaldo",
-                    callback_data="backup",
-                ),
-                InlineKeyboardButton(
-                    "📥 Restaurar Respaldo",
-                    callback_data="restore",
-                ),
+                InlineKeyboardButton("📂 Historial", callback_data="history"),
+                InlineKeyboardButton("❤️ Estado de Bots", callback_data="status"),
             ],
-            [
-                InlineKeyboardButton(
-                    "📂 Historial",
-                    callback_data="history",
-                ),
-                InlineKeyboardButton(
-                    "❤️ Estado de Bots",
-                    callback_data="status",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚙️ Configuración",
-                    callback_data="settings",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "❌ Cerrar",
-                    callback_data="close",
-                )
-            ],
+            [InlineKeyboardButton("⚙️ Configuración", callback_data="settings")],
+            [InlineKeyboardButton("❌ Cerrar", callback_data="close")],
         ]
     )
 
 
 def teclado_regreso() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "⬅️ Regresar",
-                    callback_data="home",
-                ),
-                InlineKeyboardButton(
-                    "❌ Cerrar",
-                    callback_data="close",
-                ),
-            ]
-        ]
+        [[
+            InlineKeyboardButton("⬅️ Regresar", callback_data="home"),
+            InlineKeyboardButton("❌ Cerrar", callback_data="close"),
+        ]]
     )
 
 
 def teclado_cancelar_registro() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton(
-                    "❌ Cancelar registro",
-                    callback_data="bot_registro_cancelar",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🏠 Menú Principal",
-                    callback_data="home",
-                )
-            ],
+            [InlineKeyboardButton("❌ Cancelar registro", callback_data="bot_registro_cancelar")],
+            [InlineKeyboardButton("🏠 Menú Principal", callback_data="home")],
         ]
     )
 
@@ -142,21 +115,10 @@ def teclado_cancelar_registro() -> InlineKeyboardMarkup:
 def teclado_omitir_registro() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("⏭ Omitir", callback_data="bot_registro_omitir")],
             [
-                InlineKeyboardButton(
-                    "⏭ Omitir",
-                    callback_data="bot_registro_omitir",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "❌ Cancelar",
-                    callback_data="bot_registro_cancelar",
-                ),
-                InlineKeyboardButton(
-                    "🏠 Menú Principal",
-                    callback_data="home",
-                ),
+                InlineKeyboardButton("❌ Cancelar", callback_data="bot_registro_cancelar"),
+                InlineKeyboardButton("🏠 Menú Principal", callback_data="home"),
             ],
         ]
     )
@@ -165,24 +127,54 @@ def teclado_omitir_registro() -> InlineKeyboardMarkup:
 def teclado_confirmar_registro() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("✅ Guardar Bot", callback_data="bot_registro_guardar")],
+            [InlineKeyboardButton("✏️ Editar información", callback_data="bot_registro_editar")],
             [
-                InlineKeyboardButton(
-                    "✅ Guardar Bot",
-                    callback_data="bot_registro_guardar",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "❌ Cancelar",
-                    callback_data="bot_registro_cancelar",
-                ),
-                InlineKeyboardButton(
-                    "🏠 Menú Principal",
-                    callback_data="home",
-                ),
+                InlineKeyboardButton("❌ Cancelar", callback_data="bot_registro_cancelar"),
+                InlineKeyboardButton("🏠 Menú Principal", callback_data="home"),
             ],
         ]
     )
+
+
+def teclado_campos_edicion(origen: str, bot_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    filas = []
+    for clave, (etiqueta, _) in CAMPOS.items():
+        callback = (
+            f"bot_registro_editar_campo:{clave}"
+            if origen == "registro"
+            else f"bot_editar_campo:{bot_id}:{clave}"
+        )
+        filas.append([InlineKeyboardButton(etiqueta, callback_data=callback)])
+
+    regreso = "bot_registro_confirmacion" if origen == "registro" else f"bot_detalle:{bot_id}"
+    filas.append(
+        [
+            InlineKeyboardButton("⬅️ Regresar", callback_data=regreso),
+            InlineKeyboardButton("🏠 Menú Principal", callback_data="home"),
+        ]
+    )
+    filas.append([InlineKeyboardButton("❌ Cerrar", callback_data="close")])
+    return InlineKeyboardMarkup(filas)
+
+
+def teclado_cancelar_edicion(
+    origen: str,
+    bot_id: Optional[int],
+    permite_vacio: bool,
+) -> InlineKeyboardMarkup:
+    filas = []
+    if permite_vacio:
+        filas.append([InlineKeyboardButton("🧹 Dejar vacío", callback_data="bot_edicion_vaciar")])
+
+    regreso = "bot_registro_editar" if origen == "registro" else f"bot_editar:{bot_id}"
+    filas.append(
+        [
+            InlineKeyboardButton("⬅️ Regresar", callback_data=regreso),
+            InlineKeyboardButton("❌ Cancelar", callback_data="bot_edicion_cancelar"),
+        ]
+    )
+    return InlineKeyboardMarkup(filas)
 
 
 def valor_visual(valor) -> str:
@@ -195,31 +187,39 @@ def resumen_registro(datos: dict) -> str:
         "🤖 <b>CONFIRMAR REGISTRO</b>\n\n"
         f"📛 Nombre:\n<b>{valor_visual(datos.get('nombre'))}</b>\n\n"
         f"👤 Usuario:\n{valor_visual(datos.get('username'))}\n\n"
-        f"📝 Descripción:\n"
-        f"{valor_visual(datos.get('descripcion'))}\n\n"
-        f"🌐 Repositorio:\n"
-        f"{valor_visual(datos.get('repositorio'))}\n\n"
-        f"🖥 Servidor:\n"
-        f"{valor_visual(datos.get('servidor'))}\n\n"
-        f"📂 Ruta del proyecto:\n"
-        f"{valor_visual(datos.get('ruta_proyecto'))}\n\n"
-        f"🗃 Ruta de base de datos:\n"
-        f"{valor_visual(datos.get('ruta_base_datos'))}\n\n"
-        "Confirma para guardar este bot."
+        f"📝 Descripción:\n{valor_visual(datos.get('descripcion'))}\n\n"
+        f"🌐 Repositorio:\n{valor_visual(datos.get('repositorio'))}\n\n"
+        f"🖥 Servidor:\n{valor_visual(datos.get('servidor'))}\n\n"
+        f"📂 Ruta del proyecto:\n{valor_visual(datos.get('ruta_proyecto'))}\n\n"
+        f"🗃 Ruta de base de datos:\n{valor_visual(datos.get('ruta_base_datos'))}\n\n"
+        "Puedes guardar o corregir cualquier campo."
     )
 
 
-async def mostrar_inicio(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+def texto_editor(origen: str, bot_id: Optional[int] = None) -> str:
+    if origen == "registro":
+        titulo = "✏️ <b>EDITAR ANTES DE GUARDAR</b>"
+    else:
+        bot = obtener_bot(int(bot_id)) if bot_id is not None else None
+        nombre = html.escape(str(bot["nombre"] if bot else "Bot"))
+        titulo = f"✏️ <b>EDITAR BOT</b>\n\n{nombre}"
+    return f"{titulo}\n\nSelecciona el campo que deseas modificar:"
+
+
+def normalizar_valor(campo: str, valor: str) -> str:
+    valor = str(valor or "").strip()
+    if campo == "username" and valor and not valor.startswith("@"):
+        valor = f"@{valor}"
+    return valor
+
+
+async def mostrar_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     texto = (
         "🛡️ <b>BOT RESPALDOS PREMIUM</b>\n\n"
-        "Centro independiente de respaldo, monitoreo "
-        "y recuperación de bots de Telegram.\n\n"
+        "Centro independiente de respaldo, monitoreo y recuperación "
+        "de bots de Telegram.\n\n"
         f"Versión: <b>{html.escape(VERSION)}</b>"
     )
-
     if update.callback_query:
         await update.callback_query.edit_message_text(
             texto,
@@ -234,28 +234,17 @@ async def mostrar_inicio(
         )
 
 
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-
     if not user or not autorizado(user.id):
-        await update.effective_message.reply_text(
-            "⛔ No tienes autorización para usar este bot."
-        )
+        await update.effective_message.reply_text("⛔ No tienes autorización para usar este bot.")
         return
-
-    limpiar_registro(context)
+    limpiar_flujos(context)
     await mostrar_inicio(update, context)
 
 
-async def cancelar_comando(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    limpiar_registro(context)
-
+async def cancelar_comando(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    limpiar_flujos(context)
     await update.effective_message.reply_text(
         "❌ Operación cancelada.",
         reply_markup=teclado_principal(),
@@ -263,48 +252,35 @@ async def cancelar_comando(
     return ConversationHandler.END
 
 
-async def iniciar_registro(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def iniciar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-
     if not autorizado(query.from_user.id):
         await query.answer("No autorizado.", show_alert=True)
         return ConversationHandler.END
 
+    limpiar_flujos(context)
     context.user_data["registro_bot"] = {}
-
     await query.edit_message_text(
         "➕ <b>REGISTRAR BOT</b>\n\n"
         "Escribe el <b>nombre visible</b> del bot.\n\n"
-        "Ejemplo:\n"
-        "<code>Publicidad Control Streaming</code>",
+        "Ejemplo:\n<code>Publicidad Control Streaming</code>",
         parse_mode="HTML",
         reply_markup=teclado_cancelar_registro(),
     )
     return REGISTRO_NOMBRE
 
 
-async def recibir_nombre(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def recibir_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     nombre = str(update.effective_message.text or "").strip()
-
     if not nombre:
-        await update.effective_message.reply_text(
-            "⚠️ El nombre no puede estar vacío."
-        )
+        await update.effective_message.reply_text("⚠️ El nombre no puede estar vacío.")
         return REGISTRO_NOMBRE
 
     context.user_data.setdefault("registro_bot", {})["nombre"] = nombre
-
     await update.effective_message.reply_text(
         "👤 Escribe el <b>usuario de Telegram</b> del bot.\n\n"
-        "Ejemplo:\n"
-        "<code>@PublicidadControlStreamingBot</code>\n\n"
+        "Ejemplo:\n<code>@PublicidadControlStreamingBot</code>\n\n"
         "También puedes omitirlo.",
         parse_mode="HTML",
         reply_markup=teclado_omitir_registro(),
@@ -312,56 +288,38 @@ async def recibir_nombre(
     return REGISTRO_USERNAME
 
 
-async def recibir_username(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    username = str(update.effective_message.text or "").strip()
-
-    if username and not username.startswith("@"):
-        username = f"@{username}"
-
-    context.user_data["registro_bot"]["username"] = username
-
+async def recibir_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["registro_bot"]["username"] = normalizar_valor(
+        "username",
+        update.effective_message.text,
+    )
     await update.effective_message.reply_text(
-        "📝 Escribe una <b>descripción</b> del bot.\n\n"
-        "También puedes omitirla.",
+        "📝 Escribe una <b>descripción</b> del bot.\n\nTambién puedes omitirla.",
         parse_mode="HTML",
         reply_markup=teclado_omitir_registro(),
     )
     return REGISTRO_DESCRIPCION
 
 
-async def recibir_descripcion(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def recibir_descripcion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["registro_bot"]["descripcion"] = str(
         update.effective_message.text or ""
     ).strip()
-
     await update.effective_message.reply_text(
-        "🌐 Escribe la dirección del <b>repositorio GitHub</b>.\n\n"
-        "También puedes omitirla.",
+        "🌐 Escribe la dirección del <b>repositorio GitHub</b>.\n\nTambién puedes omitirla.",
         parse_mode="HTML",
         reply_markup=teclado_omitir_registro(),
     )
     return REGISTRO_REPOSITORIO
 
 
-async def recibir_repositorio(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def recibir_repositorio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["registro_bot"]["repositorio"] = str(
         update.effective_message.text or ""
     ).strip()
-
     await update.effective_message.reply_text(
         "🖥 Escribe el nombre del <b>servidor o plataforma</b>.\n\n"
-        "Ejemplo:\n"
-        "<code>JustRunMy</code>\n"
-        "<code>Oracle Cloud</code>\n\n"
+        "Ejemplo:\n<code>JustRunMy</code>\n<code>Oracle Cloud</code>\n\n"
         "También puedes omitirlo.",
         parse_mode="HTML",
         reply_markup=teclado_omitir_registro(),
@@ -369,55 +327,139 @@ async def recibir_repositorio(
     return REGISTRO_SERVIDOR
 
 
-async def recibir_servidor(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def recibir_servidor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["registro_bot"]["servidor"] = str(
         update.effective_message.text or ""
     ).strip()
-
     await update.effective_message.reply_text(
         "📂 Escribe la <b>ruta del proyecto</b> en el servidor.\n\n"
-        "Ejemplo:\n"
-        "<code>/opt/PublicidadBot</code>\n\n"
-        "También puedes omitirla.",
+        "Ejemplo:\n<code>/opt/PublicidadBot</code>\n\nTambién puedes omitirla.",
         parse_mode="HTML",
         reply_markup=teclado_omitir_registro(),
     )
     return REGISTRO_RUTA_PROYECTO
 
 
-async def recibir_ruta_proyecto(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def recibir_ruta_proyecto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["registro_bot"]["ruta_proyecto"] = str(
         update.effective_message.text or ""
     ).strip()
-
     await update.effective_message.reply_text(
         "🗃 Escribe la <b>ruta de la base de datos</b>.\n\n"
-        "Ejemplo:\n"
-        "<code>/app/data/publicidad.db</code>\n\n"
-        "También puedes omitirla.",
+        "Ejemplo:\n<code>/app/data/publicidad.db</code>\n\nTambién puedes omitirla.",
         parse_mode="HTML",
         reply_markup=teclado_omitir_registro(),
     )
     return REGISTRO_RUTA_DATABASE
 
 
-async def recibir_ruta_database(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def recibir_ruta_database(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["registro_bot"]["ruta_base_datos"] = str(
         update.effective_message.text or ""
     ).strip()
-
-    datos = context.user_data["registro_bot"]
-
     await update.effective_message.reply_text(
+        resumen_registro(context.user_data["registro_bot"]),
+        parse_mode="HTML",
+        reply_markup=teclado_confirmar_registro(),
+    )
+    return REGISTRO_CONFIRMACION
+
+
+async def omitir_y_avanzar(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    campo: str,
+    siguiente_estado: int,
+    texto: str,
+) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data["registro_bot"][campo] = None
+    await query.edit_message_text(
+        texto,
+        parse_mode="HTML",
+        reply_markup=teclado_omitir_registro(),
+    )
+    return siguiente_estado
+
+
+async def registro_omitir_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await omitir_y_avanzar(
+        update,
+        context,
+        "username",
+        REGISTRO_DESCRIPCION,
+        "📝 Escribe una <b>descripción</b> del bot.\n\nTambién puedes omitirla.",
+    )
+
+
+async def registro_omitir_descripcion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await omitir_y_avanzar(
+        update,
+        context,
+        "descripcion",
+        REGISTRO_REPOSITORIO,
+        "🌐 Escribe la dirección del <b>repositorio GitHub</b>.\n\nTambién puedes omitirla.",
+    )
+
+
+async def registro_omitir_repositorio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await omitir_y_avanzar(
+        update,
+        context,
+        "repositorio",
+        REGISTRO_SERVIDOR,
+        "🖥 Escribe el nombre del <b>servidor o plataforma</b>.\n\nTambién puedes omitirlo.",
+    )
+
+
+async def registro_omitir_servidor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await omitir_y_avanzar(
+        update,
+        context,
+        "servidor",
+        REGISTRO_RUTA_PROYECTO,
+        "📂 Escribe la <b>ruta del proyecto</b>.\n\nTambién puedes omitirla.",
+    )
+
+
+async def registro_omitir_ruta_proyecto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await omitir_y_avanzar(
+        update,
+        context,
+        "ruta_proyecto",
+        REGISTRO_RUTA_DATABASE,
+        "🗃 Escribe la <b>ruta de la base de datos</b>.\n\nTambién puedes omitirla.",
+    )
+
+
+async def registro_omitir_ruta_database(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data["registro_bot"]["ruta_base_datos"] = None
+    await query.edit_message_text(
+        resumen_registro(context.user_data["registro_bot"]),
+        parse_mode="HTML",
+        reply_markup=teclado_confirmar_registro(),
+    )
+    return REGISTRO_CONFIRMACION
+
+
+async def mostrar_confirmacion_registro(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    query = update.callback_query
+    await query.answer()
+    datos = context.user_data.get("registro_bot")
+    if not datos:
+        await query.edit_message_text(
+            "⚠️ El registro ya no está disponible.",
+            reply_markup=teclado_principal(),
+        )
+        return ConversationHandler.END
+
+    await query.edit_message_text(
         resumen_registro(datos),
         parse_mode="HTML",
         reply_markup=teclado_confirmar_registro(),
@@ -425,18 +467,214 @@ async def recibir_ruta_database(
     return REGISTRO_CONFIRMACION
 
 
-async def omitir_campo(
+async def abrir_editor_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        texto_editor("registro"),
+        parse_mode="HTML",
+        reply_markup=teclado_campos_edicion("registro"),
+    )
+    return REGISTRO_CONFIRMACION
+
+
+async def seleccionar_campo_registro(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     query = update.callback_query
     await query.answer()
+    campo = query.data.split(":", 1)[1]
+    if campo not in CAMPOS:
+        await query.answer("Campo no válido.", show_alert=True)
+        return REGISTRO_CONFIRMACION
 
-    estado = context.user_data.get("registro_estado")
+    context.user_data["edicion_origen"] = "registro"
+    context.user_data["edicion_campo"] = campo
+    etiqueta, permite_vacio = CAMPOS[campo]
+    actual = context.user_data.get("registro_bot", {}).get(campo)
 
-    if estado is None:
+    await query.edit_message_text(
+        f"✏️ <b>{html.escape(etiqueta)}</b>\n\n"
+        f"Valor actual:\n{valor_visual(actual)}\n\n"
+        "Escribe el nuevo valor.",
+        parse_mode="HTML",
+        reply_markup=teclado_cancelar_edicion("registro", None, permite_vacio),
+    )
+    return EDICION_VALOR
+
+
+async def abrir_editor_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    bot_id = int(query.data.split(":")[1])
+    bot = obtener_bot(bot_id)
+    if not bot:
+        await query.answer("El bot no existe.", show_alert=True)
         return ConversationHandler.END
 
+    context.user_data["edicion_bot_id"] = bot_id
+    context.user_data["edicion_origen"] = "guardado"
+    await query.edit_message_text(
+        texto_editor("guardado", bot_id),
+        parse_mode="HTML",
+        reply_markup=teclado_campos_edicion("guardado", bot_id),
+    )
+    return REGISTRO_CONFIRMACION
+
+
+async def seleccionar_campo_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    _, bot_id_texto, campo = query.data.split(":", 2)
+    bot_id = int(bot_id_texto)
+    bot = obtener_bot(bot_id)
+    if not bot or campo not in CAMPOS:
+        await query.answer("Dato no disponible.", show_alert=True)
+        return ConversationHandler.END
+
+    context.user_data["edicion_bot_id"] = bot_id
+    context.user_data["edicion_origen"] = "guardado"
+    context.user_data["edicion_campo"] = campo
+    etiqueta, permite_vacio = CAMPOS[campo]
+
+    await query.edit_message_text(
+        f"✏️ <b>{html.escape(etiqueta)}</b>\n\n"
+        f"Valor actual:\n{valor_visual(bot[campo])}\n\n"
+        "Escribe el nuevo valor.",
+        parse_mode="HTML",
+        reply_markup=teclado_cancelar_edicion("guardado", bot_id, permite_vacio),
+    )
+    return EDICION_VALOR
+
+
+async def guardar_valor_editado(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    campo = context.user_data.get("edicion_campo")
+    origen = context.user_data.get("edicion_origen")
+    if campo not in CAMPOS or origen not in {"registro", "guardado"}:
+        limpiar_flujos(context)
+        await update.effective_message.reply_text(
+            "⚠️ La edición expiró.",
+            reply_markup=teclado_principal(),
+        )
+        return ConversationHandler.END
+
+    valor = normalizar_valor(campo, update.effective_message.text)
+    _, permite_vacio = CAMPOS[campo]
+    if not valor and not permite_vacio:
+        await update.effective_message.reply_text("⚠️ Este campo no puede quedar vacío.")
+        return EDICION_VALOR
+
+    if origen == "registro":
+        context.user_data.setdefault("registro_bot", {})[campo] = valor or None
+        context.user_data.pop("edicion_campo", None)
+        context.user_data.pop("edicion_origen", None)
+        await update.effective_message.reply_text(
+            resumen_registro(context.user_data["registro_bot"]),
+            parse_mode="HTML",
+            reply_markup=teclado_confirmar_registro(),
+        )
+        return REGISTRO_CONFIRMACION
+
+    bot_id = int(context.user_data["edicion_bot_id"])
+    actualizado = actualizar_bot(bot_id, **{campo: valor or None})
+    bot = obtener_bot(bot_id)
+    texto = texto_detalle_bot(bot_id)
+
+    if not actualizado or not bot or not texto:
+        await update.effective_message.reply_text(
+            "❌ No se pudo actualizar el dato.",
+            reply_markup=teclado_principal(),
+        )
+        limpiar_flujos(context)
+        return ConversationHandler.END
+
+    await update.effective_message.reply_text(
+        "✅ <b>INFORMACIÓN ACTUALIZADA</b>\n\n" + texto,
+        parse_mode="HTML",
+        reply_markup=teclado_detalle_bot(bot_id, bot["estado"]),
+    )
+    limpiar_flujos(context)
+    return ConversationHandler.END
+
+
+async def vaciar_valor_editado(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    query = update.callback_query
+    await query.answer()
+    campo = context.user_data.get("edicion_campo")
+    origen = context.user_data.get("edicion_origen")
+    if campo not in CAMPOS or not CAMPOS[campo][1]:
+        await query.answer("Este campo no puede quedar vacío.", show_alert=True)
+        return EDICION_VALOR
+
+    if origen == "registro":
+        context.user_data.setdefault("registro_bot", {})[campo] = None
+        context.user_data.pop("edicion_campo", None)
+        context.user_data.pop("edicion_origen", None)
+        await query.edit_message_text(
+            resumen_registro(context.user_data["registro_bot"]),
+            parse_mode="HTML",
+            reply_markup=teclado_confirmar_registro(),
+        )
+        return REGISTRO_CONFIRMACION
+
+    bot_id = int(context.user_data["edicion_bot_id"])
+    actualizar_bot(bot_id, **{campo: None})
+    bot = obtener_bot(bot_id)
+    texto = texto_detalle_bot(bot_id)
+    await query.edit_message_text(
+        "✅ <b>INFORMACIÓN ACTUALIZADA</b>\n\n" + (texto or ""),
+        parse_mode="HTML",
+        reply_markup=teclado_detalle_bot(
+            bot_id,
+            bot["estado"] if bot else "ACTIVO",
+        ),
+    )
+    limpiar_flujos(context)
+    return ConversationHandler.END
+
+
+async def cancelar_edicion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    origen = context.user_data.get("edicion_origen")
+    bot_id = context.user_data.get("edicion_bot_id")
+    context.user_data.pop("edicion_campo", None)
+    context.user_data.pop("edicion_origen", None)
+
+    if origen == "registro" and context.user_data.get("registro_bot"):
+        await query.edit_message_text(
+            resumen_registro(context.user_data["registro_bot"]),
+            parse_mode="HTML",
+            reply_markup=teclado_confirmar_registro(),
+        )
+        return REGISTRO_CONFIRMACION
+
+    if bot_id:
+        bot = obtener_bot(int(bot_id))
+        texto = texto_detalle_bot(int(bot_id))
+        await query.edit_message_text(
+            texto or "Bot no encontrado.",
+            parse_mode="HTML",
+            reply_markup=teclado_detalle_bot(
+                int(bot_id),
+                bot["estado"] if bot else "ACTIVO",
+            ),
+        )
+    else:
+        await query.edit_message_text(
+            texto_lista_bots(),
+            parse_mode="HTML",
+            reply_markup=teclado_lista_bots(),
+        )
+
+    limpiar_flujos(context)
     return ConversationHandler.END
 
 
@@ -446,9 +684,7 @@ async def cancelar_registro_callback(
 ) -> int:
     query = update.callback_query
     await query.answer()
-
-    limpiar_registro(context)
-
+    limpiar_flujos(context)
     await query.edit_message_text(
         "❌ Registro cancelado.",
         reply_markup=teclado_principal(),
@@ -456,34 +692,25 @@ async def cancelar_registro_callback(
     return ConversationHandler.END
 
 
-async def guardar_registro(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def guardar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-
     datos = context.user_data.get("registro_bot", {})
     correcto, mensaje, bot_id = crear_bot_desde_datos(datos)
 
     if not correcto:
         await query.edit_message_text(
-            f"❌ <b>No se pudo registrar el bot</b>\n\n"
-            f"{html.escape(mensaje)}",
+            f"❌ <b>No se pudo registrar el bot</b>\n\n{html.escape(mensaje)}",
             parse_mode="HTML",
-            reply_markup=teclado_lista_bots(),
+            reply_markup=teclado_confirmar_registro(),
         )
-        limpiar_registro(context)
-        return ConversationHandler.END
+        return REGISTRO_CONFIRMACION
 
-    limpiar_registro(context)
-
+    limpiar_flujos(context)
     bot = obtener_bot(bot_id)
     texto = texto_detalle_bot(bot_id)
-
     await query.edit_message_text(
-        "✅ <b>BOT REGISTRADO CORRECTAMENTE</b>\n\n"
-        + (texto or ""),
+        "✅ <b>BOT REGISTRADO CORRECTAMENTE</b>\n\n" + (texto or ""),
         parse_mode="HTML",
         reply_markup=teclado_detalle_bot(
             bot_id,
@@ -493,10 +720,7 @@ async def guardar_registro(
     return ConversationHandler.END
 
 
-async def botones_generales(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def botones_generales(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
 
@@ -507,7 +731,7 @@ async def botones_generales(
     opcion = query.data
 
     if opcion == "home":
-        limpiar_registro(context)
+        limpiar_flujos(context)
         await mostrar_inicio(update, context)
         return
 
@@ -523,53 +747,34 @@ async def botones_generales(
         bot_id = int(opcion.split(":")[1])
         bot = obtener_bot(bot_id)
         texto = texto_detalle_bot(bot_id)
-
         if not bot or not texto:
-            await query.answer(
-                "El bot ya no existe.",
-                show_alert=True,
-            )
+            await query.answer("El bot ya no existe.", show_alert=True)
             return
-
         await query.edit_message_text(
             texto,
             parse_mode="HTML",
-            reply_markup=teclado_detalle_bot(
-                bot_id,
-                bot["estado"],
-            ),
+            reply_markup=teclado_detalle_bot(bot_id, bot["estado"]),
         )
         return
 
     if opcion.startswith("bot_estado:"):
         _, bot_id, estado = opcion.split(":")
-        correcto, mensaje = cambiar_estado(
-            int(bot_id),
-            estado,
-        )
-
+        correcto, mensaje = cambiar_estado(int(bot_id), estado)
         await query.answer(mensaje, show_alert=not correcto)
-
         bot = obtener_bot(int(bot_id))
         texto = texto_detalle_bot(int(bot_id))
-
         if bot and texto:
             await query.edit_message_text(
                 texto,
                 parse_mode="HTML",
-                reply_markup=teclado_detalle_bot(
-                    int(bot_id),
-                    bot["estado"],
-                ),
+                reply_markup=teclado_detalle_bot(int(bot_id), bot["estado"]),
             )
         return
 
     if opcion.startswith("bot_eliminar_confirmar:"):
         bot_id = int(opcion.split(":")[1])
         correcto, mensaje = borrar_bot(bot_id)
-
         await query.answer(mensaje, show_alert=not correcto)
-
         await query.edit_message_text(
             texto_lista_bots(),
             parse_mode="HTML",
@@ -580,17 +785,14 @@ async def botones_generales(
     if opcion.startswith("bot_eliminar:"):
         bot_id = int(opcion.split(":")[1])
         bot = obtener_bot(bot_id)
-
         if not bot:
             await query.answer("El bot no existe.", show_alert=True)
             return
-
         await query.edit_message_text(
             "⚠️ <b>CONFIRMAR ELIMINACIÓN</b>\n\n"
             f"¿Deseas eliminar del registro a:\n\n"
             f"<b>{html.escape(str(bot['nombre']))}</b>?\n\n"
-            "Esto elimina el registro administrativo, "
-            "pero no borra el bot ni sus archivos.",
+            "Esto elimina el registro administrativo, pero no borra el bot ni sus archivos.",
             parse_mode="HTML",
             reply_markup=teclado_confirmar_eliminacion(bot_id),
         )
@@ -617,241 +819,83 @@ async def botones_generales(
         )
         return
 
-    if opcion.startswith("bot_editar:"):
-        await query.answer(
-            "La edición se integrará en la siguiente ampliación.",
-            show_alert=True,
-        )
-        return
+    textos = {
+        "backup": "💾 <b>CREAR RESPALDO</b>\n\nPrimero registra los bots que deseas proteger.",
+        "restore": "📥 <b>RESTAURAR RESPALDO</b>\n\nLa restauración estará disponible cuando existan respaldos registrados.",
+        "history": "📂 <b>HISTORIAL DE RESPALDOS</b>\n\nTodavía no existen respaldos registrados.",
+        "status": "❤️ <b>ESTADO DE BOTS</b>\n\nEl monitoreo automático se integrará en una próxima mejora.",
+        "settings": "⚙️ <b>CONFIGURACIÓN</b>\n\nDesde <b>Bots Registrados</b> puedes agregar y editar los proyectos administrados.",
+    }
 
-    if opcion == "backup":
-        texto = (
-            "💾 <b>CREAR RESPALDO</b>\n\n"
-            "Primero registra los bots que deseas proteger."
-        )
-
-    elif opcion == "restore":
-        texto = (
-            "📥 <b>RESTAURAR RESPALDO</b>\n\n"
-            "La restauración estará disponible cuando "
-            "existan respaldos registrados."
-        )
-
-    elif opcion == "history":
-        texto = (
-            "📂 <b>HISTORIAL DE RESPALDOS</b>\n\n"
-            "Todavía no existen respaldos registrados."
-        )
-
-    elif opcion == "status":
-        texto = (
-            "❤️ <b>ESTADO DE BOTS</b>\n\n"
-            "El monitoreo automático se integrará "
-            "en una próxima mejora."
-        )
-
-    elif opcion == "settings":
-        texto = (
-            "⚙️ <b>CONFIGURACIÓN</b>\n\n"
-            "Desde <b>Bots Registrados</b> puedes agregar "
-            "los proyectos que administrará este sistema."
-        )
-
-    elif opcion == "close":
+    if opcion == "close":
         await query.edit_message_text(
-            "✅ Panel cerrado.\n\n"
-            "Usa /start para abrirlo nuevamente."
+            "✅ Panel cerrado.\n\nUsa /start para abrirlo nuevamente."
         )
         return
-
-    else:
-        texto = "Opción no reconocida."
 
     await query.edit_message_text(
-        texto,
+        textos.get(opcion, "Opción no reconocida."),
         parse_mode="HTML",
         reply_markup=teclado_regreso(),
     )
 
 
-async def registro_omitir_username(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data["registro_bot"]["username"] = None
-
-    await query.edit_message_text(
-        "📝 Escribe una <b>descripción</b> del bot.\n\n"
-        "También puedes omitirla.",
-        parse_mode="HTML",
-        reply_markup=teclado_omitir_registro(),
-    )
-    return REGISTRO_DESCRIPCION
-
-
-async def registro_omitir_descripcion(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data["registro_bot"]["descripcion"] = None
-
-    await query.edit_message_text(
-        "🌐 Escribe la dirección del <b>repositorio GitHub</b>.\n\n"
-        "También puedes omitirla.",
-        parse_mode="HTML",
-        reply_markup=teclado_omitir_registro(),
-    )
-    return REGISTRO_REPOSITORIO
-
-
-async def registro_omitir_repositorio(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data["registro_bot"]["repositorio"] = None
-
-    await query.edit_message_text(
-        "🖥 Escribe el nombre del <b>servidor o plataforma</b>.\n\n"
-        "También puedes omitirlo.",
-        parse_mode="HTML",
-        reply_markup=teclado_omitir_registro(),
-    )
-    return REGISTRO_SERVIDOR
-
-
-async def registro_omitir_servidor(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data["registro_bot"]["servidor"] = None
-
-    await query.edit_message_text(
-        "📂 Escribe la <b>ruta del proyecto</b>.\n\n"
-        "También puedes omitirla.",
-        parse_mode="HTML",
-        reply_markup=teclado_omitir_registro(),
-    )
-    return REGISTRO_RUTA_PROYECTO
-
-
-async def registro_omitir_ruta_proyecto(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data["registro_bot"]["ruta_proyecto"] = None
-
-    await query.edit_message_text(
-        "🗃 Escribe la <b>ruta de la base de datos</b>.\n\n"
-        "También puedes omitirla.",
-        parse_mode="HTML",
-        reply_markup=teclado_omitir_registro(),
-    )
-    return REGISTRO_RUTA_DATABASE
-
-
-async def registro_omitir_ruta_database(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data["registro_bot"]["ruta_base_datos"] = None
-
-    await query.edit_message_text(
-        resumen_registro(context.user_data["registro_bot"]),
-        parse_mode="HTML",
-        reply_markup=teclado_confirmar_registro(),
-    )
-    return REGISTRO_CONFIRMACION
-
-
 def main() -> None:
     if not BOT_TOKEN:
-        raise RuntimeError(
-            "Falta configurar BOT_TOKEN en el archivo .env"
-        )
+        raise RuntimeError("Falta configurar BOT_TOKEN en el archivo .env")
 
     application = Application.builder().token(BOT_TOKEN).build()
 
-    registro_conversation = ConversationHandler(
+    flujo = ConversationHandler(
         entry_points=[
+            CallbackQueryHandler(iniciar_registro, pattern=r"^bot_registrar$"),
+            CallbackQueryHandler(abrir_editor_bot, pattern=r"^bot_editar:\d+$"),
             CallbackQueryHandler(
-                iniciar_registro,
-                pattern=r"^bot_registrar$",
-            )
+                seleccionar_campo_bot,
+                pattern=r"^bot_editar_campo:\d+:[a-z_]+$",
+            ),
         ],
         states={
             REGISTRO_NOMBRE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    recibir_nombre,
-                )
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_nombre)
             ],
             REGISTRO_USERNAME: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    recibir_username,
-                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_username),
                 CallbackQueryHandler(
                     registro_omitir_username,
                     pattern=r"^bot_registro_omitir$",
                 ),
             ],
             REGISTRO_DESCRIPCION: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    recibir_descripcion,
-                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_descripcion),
                 CallbackQueryHandler(
                     registro_omitir_descripcion,
                     pattern=r"^bot_registro_omitir$",
                 ),
             ],
             REGISTRO_REPOSITORIO: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    recibir_repositorio,
-                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_repositorio),
                 CallbackQueryHandler(
                     registro_omitir_repositorio,
                     pattern=r"^bot_registro_omitir$",
                 ),
             ],
             REGISTRO_SERVIDOR: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    recibir_servidor,
-                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_servidor),
                 CallbackQueryHandler(
                     registro_omitir_servidor,
                     pattern=r"^bot_registro_omitir$",
                 ),
             ],
             REGISTRO_RUTA_PROYECTO: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    recibir_ruta_proyecto,
-                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_ruta_proyecto),
                 CallbackQueryHandler(
                     registro_omitir_ruta_proyecto,
                     pattern=r"^bot_registro_omitir$",
                 ),
             ],
             REGISTRO_RUTA_DATABASE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    recibir_ruta_database,
-                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_ruta_database),
                 CallbackQueryHandler(
                     registro_omitir_ruta_database,
                     pattern=r"^bot_registro_omitir$",
@@ -861,7 +905,49 @@ def main() -> None:
                 CallbackQueryHandler(
                     guardar_registro,
                     pattern=r"^bot_registro_guardar$",
-                )
+                ),
+                CallbackQueryHandler(
+                    abrir_editor_registro,
+                    pattern=r"^bot_registro_editar$",
+                ),
+                CallbackQueryHandler(
+                    seleccionar_campo_registro,
+                    pattern=r"^bot_registro_editar_campo:[a-z_]+$",
+                ),
+                CallbackQueryHandler(
+                    mostrar_confirmacion_registro,
+                    pattern=r"^bot_registro_confirmacion$",
+                ),
+                CallbackQueryHandler(
+                    abrir_editor_bot,
+                    pattern=r"^bot_editar:\d+$",
+                ),
+                CallbackQueryHandler(
+                    seleccionar_campo_bot,
+                    pattern=r"^bot_editar_campo:\d+:[a-z_]+$",
+                ),
+            ],
+            EDICION_VALOR: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    guardar_valor_editado,
+                ),
+                CallbackQueryHandler(
+                    vaciar_valor_editado,
+                    pattern=r"^bot_edicion_vaciar$",
+                ),
+                CallbackQueryHandler(
+                    cancelar_edicion,
+                    pattern=r"^bot_edicion_cancelar$",
+                ),
+                CallbackQueryHandler(
+                    abrir_editor_registro,
+                    pattern=r"^bot_registro_editar$",
+                ),
+                CallbackQueryHandler(
+                    abrir_editor_bot,
+                    pattern=r"^bot_editar:\d+$",
+                ),
             ],
         },
         fallbacks=[
@@ -869,6 +955,10 @@ def main() -> None:
             CallbackQueryHandler(
                 cancelar_registro_callback,
                 pattern=r"^bot_registro_cancelar$",
+            ),
+            CallbackQueryHandler(
+                cancelar_edicion,
+                pattern=r"^bot_edicion_cancelar$",
             ),
             CallbackQueryHandler(
                 cancelar_registro_callback,
@@ -880,14 +970,11 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancelar_comando))
-    application.add_handler(registro_conversation)
+    application.add_handler(flujo)
     application.add_handler(CallbackQueryHandler(botones_generales))
 
     print(f"BOT RESPALDOS PREMIUM {VERSION} iniciado.")
-
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES
-    )
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
