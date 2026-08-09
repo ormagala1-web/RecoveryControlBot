@@ -328,6 +328,26 @@ def registrar_respaldo(
         return int(cursor.lastrowid)
 
 
+def actualizar_estado_respaldo(
+    respaldo_id: int,
+    estado: str,
+) -> bool:
+    with conectar_db() as conexion:
+        cursor = conexion.execute(
+            """
+            UPDATE historial_respaldos
+            SET estado = ?
+            WHERE id = ?
+            """,
+            (
+                str(estado).upper(),
+                int(respaldo_id),
+            ),
+        )
+        conexion.commit()
+        return cursor.rowcount > 0
+
+
 def obtener_respaldos_bot(
     bot_id: int,
     limite: int = 20,
