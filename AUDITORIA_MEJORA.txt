@@ -1,0 +1,8 @@
+v1.1.5 — Versión autoritativa desde código operativo
+
+BASE: BotRespaldosPremium v1.1.4 real descargada de Oracle.
+CAMBIO ÚNICO: el lector de versiones prioriza la constante VERSION declarada en bot.py y detecta discrepancias con VERSION y VERSION_INFO.json.
+NO SE MODIFICA: la VERSION del bot administrado; el bot.py incluido conserva 1.1.4.
+VALIDACIÓN: respaldos.py compila con py_compile; bot.py compila con py_compile.
+
+Objetivo: evitar que un VERSION_INFO/VERSION desactualizado haga aparecer una versión inferior a la versión realmente declarada por el código operativo.

@@ -1,0 +1,16 @@
+{
+  "version": "1.1.5",
+  "version_name": "Versión autoritativa desde código operativo",
+  "status": "CANDIDATE",
+  "base_version": "1.1.4",
+  "timezone": "America/Lima",
+  "scope": [
+    "identificacion_de_version_desde_bot_py",
+    "deteccion_de_inconsistencias_con_VERSION_y_VERSION_INFO",
+    "conservacion_de_metadatos_de_origen"
+  ],
+  "files_modified": [
+    "respaldos.py"
+  ],
+  "bot_code_version_preserved": "1.1.4"
+}
