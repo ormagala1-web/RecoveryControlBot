@@ -542,6 +542,19 @@ def es_publicidad_bot(bot) -> bool:
     )
 
 
+def es_publicidad_contratada_bot(bot) -> bool:
+    nombre = str(bot["nombre"] or "").strip().upper()
+    username = str(bot["username"] or "").strip().lower()
+    repositorio = str(bot["repositorio"] or "").strip().lower()
+
+    return (
+        username == "@publicidadcontratada_bot"
+        or nombre == "PUBLICIDAD CONTRATADA"
+        or repositorio.endswith("/publicidadcontratadabot")
+        or repositorio.endswith("/publicidadcontratadabot.git")
+    )
+
+
 def es_maximo_o_union_bot(bot) -> bool:
     nombre = str(bot["nombre"] or "").strip().upper()
     username = str(bot["username"] or "").strip().lower()
@@ -610,6 +623,18 @@ def obtener_configuracion_respaldo(bot) -> dict:
             "db_filename": "publicidad.db",
             "product_name": "PublicidadBot",
             "product_aliases": {"publicidadbot"},
+        }
+
+    if es_publicidad_contratada_bot(bot):
+        return {
+            "incluir_base": True,
+            "agent_url": "",
+            "agent_secret": "",
+            "agent_timeout": 180,
+            "git_branch": "",
+            "db_filename": "publicidad.db",
+            "product_name": "PublicidadContratadaBot",
+            "product_aliases": {"publicidadcontratadabot"},
         }
 
     if es_maximo_o_union_bot(bot):
@@ -1388,6 +1413,16 @@ def crear_respaldo_fuente_github(bot_id: int) -> dict:
             datos_git = descargar_repositorio(repositorio, repo)
             version_github = leer_version_desde_directorio(repo)
 
+            incluir_base_local = False
+            ruta_db_local = None
+            if es_publicidad_contratada_bot(bot):
+                ruta_registrada = str(bot["ruta_base_datos"] or "").strip()
+                if ruta_registrada:
+                    candidata_db = Path(ruta_registrada).expanduser()
+                    if candidata_db.is_absolute() and candidata_db.is_file():
+                        incluir_base_local = True
+                        ruta_db_local = candidata_db
+
             manifest = {
                 "version_manifest": 3,
                 "tipo_respaldo": "AUDITORIA_GITHUB",
@@ -1403,13 +1438,19 @@ def crear_respaldo_fuente_github(bot_id: int) -> dict:
                 "version_estado": version_github.get("version_estado"),
                 "estado_desarrollo": version_github.get("estado_desarrollo"),
                 "base_commit": version_github.get("base_commit"),
-                "base_datos_incluida": False,
+                "base_datos_incluida": incluir_base_local,
+                "archivo_base_datos": ruta_db_local.name if incluir_base_local else None,
+                "sha256_base_datos": calcular_sha256(ruta_db_local) if incluir_base_local else None,
+                "origen_base_datos": "RUTA_REGISTRADA_DEL_BOT" if incluir_base_local else None,
                 "uso_recomendado": "AUDITORIA_MEJORAS_CODIGO",
             }
             ruta_manifest = crear_manifest(temporal, manifest)
             ruta = carpeta_bot / f"{nombre_bot}_{sello}_github.tar.gz"
             with tarfile.open(ruta, "w:gz") as tar:
                 cantidad = agregar_directorio(tar, repo, "codigo")
+                if incluir_base_local and ruta_db_local is not None:
+                    tar.add(ruta_db_local, arcname=ruta_db_local.name, recursive=False)
+                    cantidad += 1
                 tar.add(ruta_manifest, arcname="manifest.json", recursive=False)
             if cantidad <= 0:
                 ruta.unlink(missing_ok=True)
@@ -1418,6 +1459,7 @@ def crear_respaldo_fuente_github(bot_id: int) -> dict:
                 bot, ruta, "FUENTE_GITHUB",
                 f"Copia individual de GitHub para auditoría/mejoras. Rama {datos_git.get('rama') or 'desconocida'}, commit {datos_git.get('commit') or 'desconocido'}.",
                 cantidad + 1,
+                incluir_base_local,
                 version=version_github.get("version"),
                 version_estado=version_github.get("version_estado"),
             )

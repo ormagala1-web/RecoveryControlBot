@@ -1,16 +1,21 @@
 {
-  "version": "1.1.5",
-  "version_name": "Versión autoritativa desde código operativo",
+  "version": "1.1.6",
+  "version_name": "Integración PUBLICIDAD CONTRATADA con respaldo de base en fuente GitHub",
   "status": "CANDIDATE",
-  "base_version": "1.1.4",
+  "base_version": "1.1.5",
   "timezone": "America/Lima",
   "scope": [
-    "identificacion_de_version_desde_bot_py",
-    "deteccion_de_inconsistencias_con_VERSION_y_VERSION_INFO",
-    "conservacion_de_metadatos_de_origen"
+    "reconocimiento_de_publicidad_contratada",
+    "configuracion_de_base_propia",
+    "respaldo_github_con_codigo_manifest_y_base_para_publicidad_contratada",
+    "conservacion_del_motor_existente_justrunmy_y_oracle",
+    "sin_cambios_en_maximocontrolgroup"
   ],
   "files_modified": [
-    "respaldos.py"
+    "respaldos.py",
+    "VERSION",
+    "VERSION_INFO.json",
+    "AUDITORIA_MEJORA.txt"
   ],
   "bot_code_version_preserved": "1.1.4"
 }
